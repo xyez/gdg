@@ -320,7 +320,14 @@ func (s *DashNGoImpl) UploadDashboards(filterReq filters.Filter) {
 
 		err = json.Unmarshal(rawBoard, &data)
 		//zero out ID.  Can't create a new dashboard if an ID already exists.
-		delete(data, "id")
+		entity, err := s.getDashboardByUid(data["uid"].(string))
+		//Wipe IDs
+		if err != nil {
+			delete(data, "id")
+		} else {
+			_ = entity
+			//data["id"] = entity.Meta.
+		}
 		importDashReq := dashboards.NewImportDashboardParams()
 		importDashReq.Body = &models.ImportDashboardRequest{
 			FolderID:  folderId,
