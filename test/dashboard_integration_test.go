@@ -53,6 +53,7 @@ func TestDashboardCRUD(t *testing.T) {
 	slog.Info("Importing Dashboards")
 	list := apiClient.DownloadDashboards(filtersEntity)
 	assert.Equal(t, len(list), len(boards))
+	apiClient.UploadDashboards(filtersEntity)
 	slog.Info("Deleting Dashboards")
 	deleteList := apiClient.DeleteAllDashboards(filtersEntity)
 	assert.Equal(t, len(deleteList), len(boards))

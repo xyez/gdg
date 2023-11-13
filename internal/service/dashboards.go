@@ -243,13 +243,29 @@ func (s *DashNGoImpl) UploadDashboards(filterReq filters.Filter) {
 		folderName string
 		folderId   int64
 	)
+	type dashIdentifier struct {
+		ID           string
+		UID          string
+		DeleteMarker bool
+	}
+
 	path := config.Config().GetDefaultGrafanaConfig().GetPath(config.DashboardResource)
 	filesInDir, err := s.storage.FindAllFiles(path, true)
 	if err != nil {
 		log.Fatalf("unable to find any files to export from storage engine, err: %v", err)
 	}
-	//Delete all dashboards that match prior to import
-	s.DeleteAllDashboards(filterReq)
+
+	currentDashboards := s.ListDashboards(filterReq)
+
+	var currentDashMap = make(map[dashIdentifier]*models.Hit)
+	for ndx, currentDashboard := range currentDashboards {
+		key := dashIdentifier{
+			ID:           fmt.Sprintf("%d", currentDashboard.ID),
+			UID:          currentDashboard.UID,
+			DeleteMarker: true,
+		}
+		currentDashMap[key] = currentDashboards[ndx]
+	}
 
 	folderMap := getFolderNameIDMap(s.ListFolder(NewFolderFilter()))
 
@@ -319,46 +335,88 @@ func (s *DashNGoImpl) UploadDashboards(filterReq filters.Filter) {
 		data := make(map[string]interface{}, 0)
 
 		err = json.Unmarshal(rawBoard, &data)
-		//zero out ID.  Can't create a new dashboard if an ID already exists.
-		entity, err := s.getDashboardByUid(data["uid"].(string))
-		//Wipe IDs
-		if err != nil {
-			delete(data, "id")
+		lookUpKey := dashIdentifier{
+			DeleteMarker: true,
+			ID:           fmt.Sprintf("%v", data["id"]),
+			UID:          fmt.Sprintf("%v", data["uid"]),
+		}
+		overrideParameter := false
+		//If board exists, persist current IDs and replace data.
+		if val, ok := currentDashMap[lookUpKey]; ok {
+			data["uid"] = val.UID
+			data["id"] = float64(val.ID)
+			overrideParameter = true
+			//Update Deletion.
+			delete(currentDashMap, lookUpKey)
+			lookUpKey.DeleteMarker = false
+			currentDashMap[lookUpKey] = val
 		} else {
-			_ = entity
-			//data["id"] = entity.Meta.
+			delete(data, "id")
+			overrideParameter = false
 		}
 		importDashReq := dashboards.NewImportDashboardParams()
 		importDashReq.Body = &models.ImportDashboardRequest{
 			FolderID:  folderId,
-			Overwrite: true,
+			Overwrite: overrideParameter,
 			Dashboard: data,
 		}
 
-		if _, exportError := s.client.Dashboards.ImportDashboard(importDashReq, s.getAuth()); exportError != nil {
-			slog.Info("error on Exporting dashboard", "dashboard-filename", file, "err", err)
+		if data, exportError := s.client.Dashboards.ImportDashboard(importDashReq, s.getAuth()); exportError != nil {
+			_ = data
+			slog.Info("error on Exporting dashboard", "dashboard-filename", file, "err", exportError)
 			continue
+		} else {
+			slog.Info("Successfully exported dashboard", "dashboard", data.GetPayload().Title)
+		}
+
+	}
+	//Delete untracked dashboards in watched folders
+	for key, _ := range currentDashMap {
+		if key.DeleteMarker {
+			board, err := s.deleteDashboardByUID(key.UID)
+			if err != nil {
+				slog.Info("Failed to delete dashboard", "uid", key.UID, "dashboard", board, "err", err)
+			}
 		}
 
 	}
 }
 
-// DeleteAllDashboards clears all current dashboards being monitored.  Any folder not white listed
-// will not be affected
-func (s *DashNGoImpl) DeleteAllDashboards(filter filters.Filter) []string {
+// deleteDashboardByUID deletes a given dashboard
+func (s *DashNGoImpl) deleteDashboardByUID(uid string) (string, error) {
+	dp := dashboards.NewDeleteDashboardByUIDParams()
+	dp.UID = uid
+	entry, err := s.client.Dashboards.DeleteDashboardByUID(dp, s.getAuth())
+	if err == nil {
+		return *entry.GetPayload().Title, nil
+	}
+
+	return "", err
+}
+
+func (s *DashNGoImpl) DeleteDashboards(uidList []string) []string {
 	var dashboardListing = make([]string, 0)
 
-	items := s.ListDashboards(filter)
-	for _, item := range items {
-		if filter.ValidateAll(map[filters.FilterType]string{filters.FolderFilter: item.FolderTitle, filters.DashFilter: item.Slug}) {
-			dp := dashboards.NewDeleteDashboardByUIDParams()
-			dp.UID = item.UID
-			_, err := s.client.Dashboards.DeleteDashboardByUID(dp, s.getAuth())
-			if err == nil {
-				dashboardListing = append(dashboardListing, item.Title)
-			}
+	for _, item := range uidList {
+		title, err := s.deleteDashboardByUID(item)
+		if err == nil {
+			dashboardListing = append(dashboardListing, title)
 		}
 	}
 	return dashboardListing
+}
+
+// DeleteAllDashboards clears all current dashboards being monitored.  Any folder not whitelisted
+// will not be affected
+func (s *DashNGoImpl) DeleteAllDashboards(filter filters.Filter) []string {
+	var uidList []string
+	items := s.ListDashboards(filter)
+	for _, item := range items {
+		if filter.ValidateAll(map[filters.FilterType]string{filters.FolderFilter: item.FolderTitle, filters.DashFilter: item.Slug}) {
+			uidList = append(uidList, item.UID)
+		}
+	}
+
+	return s.DeleteDashboards(uidList)
 
 }
