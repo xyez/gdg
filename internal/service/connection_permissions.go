@@ -128,7 +128,6 @@ func (s *DashNGoImpl) UploadConnectionPermissions(filter filters.Filter) []strin
 				p.SetBuiltinRole(tools.PtrOf(entry.BuiltInRole))
 			}
 			_, err = s.client.DatasourcePermissions.AddPermission(p, s.getAuth())
-			//err = s.extended.AddConnectionPermission(p)
 			if err != nil {
 				slog.Error("Failed to update folder permissions")
 			} else {
